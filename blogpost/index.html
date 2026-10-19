@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Relative Prediction Representations (RePR): learning scalable latent tokenizers by factorizing pointwise mutual information estimated with a generative model.">
+  <title>Generative Representation Learning for Scalable Latent Tokenization</title>
+  <link rel="stylesheet" href="vendor/katex/katex.min.css">
+  <link rel="stylesheet" href="style.css">
+  <script defer src="vendor/katex/katex.min.js"></script>
+  <script defer src="vendor/katex/auto-render.min.js"></script>
+  <script defer src="math.js?v=e19f9093c598"></script>
+</head>
+<body>
+<main>
+<article>
+  <header>
+    <h1>Generative Representation Learning for Scalable Latent Tokenization</h1>
+    <p class="authors">Alan Baade<sup>*</sup>, Kyle Sargent, Vincent Sitzmann, Eric Ryan Chan<sup>†</sup>,<br class="desktop-break"> Justin Johnson<sup>†</sup>, Li Fei-Fei<sup>†</sup>, and Gordon Wetzstein<sup>†</sup></p>
+    <p class="author-notes"><sup>*</sup> Correspondence: <a href="mailto:baade@stanford.edu">baade@stanford.edu</a>. <sup>†</sup> Equal advising.</p>
+    <p class="article-links"><a href="https://github.com/AlanBaade/repr">Code</a> · <a href="#citation">Citation</a></p>
+  </header>
+
+  <section id="abstract">
+    <h2>Abstract</h2>
+<p>We introduce an approach for self-supervised representation learning designed to be used as a tokenizer for generative modeling. Our objective supervises a representation loss by factorizing the pointwise mutual information of the data, which we estimate by taking information differences between conditional predictions from a learned generative model. We justify our algorithm theoretically and empirically, demonstrating that our generative approach to representation learning avoids dimensional collapse and feature suppression in cases where commonly used methods like DINO and LeJEPA fail. Moreover, we show our representation learning technique is scalable; expending more compute leads to predictably better latent tokenization. For the first time, we perform a careful analysis of the combined flop efficiency of tokenizer and generative model and demonstrate that our approach is a compute-optimal improvement over direct diffusion for pixel-space generation, obtaining an FID-50K of 2.18 with JiT-L. Applied to ImageNet and the text-to-image dataset GPIC, we show tokenizer encoder scaling laws for diffusability, where extrapolating our approach achieves representations in 7x fewer FLOPs than DINOv2 on ImageNet and 8x fewer FLOPs than WebSSL on GPIC.</p>
+  </section>
+  <section id="overview">
+    <h2>Overview</h2>
+<ol><li>We introduce an algorithm for representation learning, Relative Prediction Representations (RePR), that is principled and scalable as a tokenizer</li><li>We show scaling laws for tokenization<ul><li>Scaling only the tokenizer encoder results in predictable gains in FID, holding diffusion FLOPs constant.</li><li>Training a tokenizer before diffusion is compute-optimal versus pixel diffusion</li></ul></li></ol>
+  </section>
+  <section id="motivation">
+    <h2>Motivation</h2>
+<p>We make two motivating claims:</p><ol><li>The tokenizer is either a scaling axis or should be deleted entirely<ul><li>"Everyone should hope that we can throw away tokenization" - Karpathy</li></ul></li><li>All previous tokenizers, including representation learners, have failed to scale or will fail to scale<ul><li>VAE, JEPA, DINO, LeJEPA, AE, MAE, VQ-VAE</li></ul></li></ol><p>Claim 1 is self-evident. The tokenizer either does or doesn't matter at scale.</p><p>For Claim 2, we propose three desiderata for tokenizers</p>
+  </section>
+  <section id="requirements">
+    <h2>What&#x27;s Required for Scalable Tokenization: A motivating guess.</h2>
+<p>We hypothesize that all three criteria are necessary for scalable tokenization</p><p><strong>Causal Theoretical Grounding</strong></p><ul><li>The loss must directly supervise the representations used as a tokenizer. No intermediate network features are allowed; interpretability does not scale.</li></ul><p><strong>Architectural Scalability</strong></p><ul><li>Gradient Descent on Transformers scales. However, older tokenization approaches such as VAEs bottleneck and quantize gradient descent by adding noise (information destroying), as do VQ-VAEs and AutoEncoders with finite precision bottleneck layers.</li></ul><p><strong>No Feature Suppression</strong></p><ul><li>Contrastive Learners, as well as LeJEPA, have their losses saturated when exponentially few bits are shared between views (e.g. log batch size). This places excessive burden on the masking function, which is hand engineered and does not get more clever with scale.</li></ul><p>Here is a table of where every other approach fails.</p><div aria-labelledby="criteria-caption" class="table-scroll wide" role="region" tabindex="0">
+<table class="criteria">
+<caption id="criteria-caption"><span class="yes">✓</span> Yes · <span class="no">✗</span> No · <span class="uncertain">?</span> Uncertain.</caption>
+<thead>
+<tr>
+<th rowspan="2" scope="col">Criterion</th>
+<th colspan="3" scope="colgroup">Autoencoders</th>
+<th colspan="2" scope="colgroup">CLS token</th>
+<th colspan="3" scope="colgroup">Patch features</th>
+<th rowspan="2" scope="col">RePR<br/>(ours)</th>
+</tr>
+<tr>
+<th scope="col">VAE</th><th scope="col">AE</th><th scope="col">VQ-VAE</th>
+<th scope="col">LeJEPA</th><th scope="col">MoCo</th>
+<th scope="col">(Le)JEPA</th><th scope="col">MAE</th><th scope="col">DINO</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<th scope="row">Causal theory</th>
+<td><span aria-label="Yes" class="yes">✓</span></td><td><span class="uncertain" aria-label="Uncertain">?</span></td><td><span aria-label="Yes" class="yes">✓</span></td>
+<td><span aria-label="Yes" class="yes">✓</span></td><td><span aria-label="Yes" class="yes">✓</span></td>
+<td><span aria-label="No" class="no">✗</span></td><td><span aria-label="No" class="no">✗</span></td><td><span aria-label="No" class="no">✗</span></td>
+<td><span aria-label="Yes" class="yes">✓</span></td>
+</tr>
+<tr>
+<th scope="row">Architecture scales</th>
+<td><span aria-label="No" class="no">✗</span></td><td><span aria-label="No" class="no">✗</span></td><td><span aria-label="No" class="no">✗</span></td>
+<td><span aria-label="Yes" class="yes">✓</span></td><td><span aria-label="Yes" class="yes">✓</span></td>
+<td><span aria-label="Yes" class="yes">✓</span></td><td><span aria-label="Yes" class="yes">✓</span></td><td><span aria-label="Yes" class="yes">✓</span></td>
+<td><span aria-label="Yes" class="yes">✓</span></td>
+</tr>
+<tr>
+<th scope="row">No feature suppression</th>
+<td><span aria-label="Yes" class="yes">✓</span></td><td><span aria-label="Yes" class="yes">✓</span></td><td><span aria-label="Yes" class="yes">✓</span></td>
+<td><span aria-label="No" class="no">✗</span></td><td><span aria-label="No" class="no">✗</span></td>
+<td><span class="uncertain" aria-label="Uncertain">?</span></td><td><span aria-label="Yes" class="yes">✓</span></td><td><span class="uncertain" aria-label="Uncertain">?</span></td>
+<td><span aria-label="Yes" class="yes">✓</span></td>
+</tr>
+</tbody>
+</table>
+</div>
+  </section>
+  <section id="approach">
+    <h2>Our Approach</h2>
+<h3>Main Idea</h3><p>Our approach makes the following observations</p><ol><li>Contrastive learners implicitly factorize the Pointwise Mutual Information (PMI) between views of the data (up to an unidentifiable scalar offset \(a(x)\)).<div class="equation">
+      \[
+      \operatorname{PMI}(x,y)=\operatorname{PMI}(y,x)=\log p(y\mid x)-\log p(y).
+      \]
+    </div><p>For example, for a contrastive representation model \(R_\theta\),</p><div class="equation">
+      \[
+      \langle R_\theta(x),R_\theta(y)\rangle\approx\operatorname{PMI}(x,y)+a(x).
+      \]
+    </div></li><li>The outputs of generative models a) improve predictably with scaling laws and b) can be used directly to estimate the PMI<ul><li>We can estimate log-probabilities with a generative model: \(\log P_{G_\theta}(y\mid x)\) and \(\log P_{G_\theta}(y)\).</li></ul></li></ol><p>Then, at a high level, our loss is:</p><div class="equation wide">
+      \[
+      \begin{aligned}
+      \mathcal{L}_{\mathrm{PMI}}
+      &amp;=\Bigl\|\langle R_\theta(x),R_\theta(y)\rangle-\operatorname{PMI}(x,y)\Bigr\|_2^2\\
+      &amp;=\Bigl\|\langle R_\theta(x),R_\theta(y)\rangle
+      -\operatorname{stopgrad}\!\Bigl(\log P_{G_\theta}(y\mid x)-\log P_{G_\theta}(y)\Bigr)\Bigr\|_2^2.
+      \end{aligned}
+      \]
+    </div><p>However, this doesn't work immediately for two reasons:</p><ol><li>PMI is dominated by high-frequency bits, not things we care about like semantics<ul><li>We solve this with timestep weighting</li></ul></li><li>Estimating \(\log p(x)\) is intractable as the size of \(x\) grows<ul><li>We solve this with a novel bootstrapping technique</li></ul></li></ol><h3>PMI from diffusion</h3><p>PMI can be extracted from generative models</p><p>For \(\log p\) from a discrete model, it's trivial.</p><p>For \(\log p\) from a diffusion model, it's extractable via a timestep-weighted loss.</p><ul><li>We can use the ELBO, not the probability-flow ODE log det Jacobian.</li></ul>
+<!-- Excerpts from "PMI Estimation from Generative Models", including eq. pmidiffusion.
+     Notation follows this article (y_t, x/y, epsilon); VLB is written ELBO. -->
+<p>In this work we use the linear-interpolation (flow-based) schedule \(y_t=(1-t)y+t\epsilon\), with \(\epsilon\sim\mathcal{N}(0,I)\).</p>
+<p>The PMI between two points can then be calculated by subtracting their log probability estimates:</p>
+<div class="equation wide" id="diffusion-pmi-equation">
+  \[
+  \begin{aligned}
+  \operatorname{PMI}(x,y)
+  &amp;=\mathbb{E}_{\substack{t\sim U[0,1]\\\epsilon\sim\mathcal{N}(0,I)}}
+  \Biggl[\frac{1-t}{t^3}\Bigl(
+  \bigl\|y-\mathbb{E}(y\mid y_t,t)\bigr\|_2^2\\
+  &amp;\qquad\qquad\qquad\quad
+  -\bigl\|y-\mathbb{E}(y\mid x,y_t,t)\bigr\|_2^2
+  \Bigr)\Biggr].
+  \end{aligned}
+  \]
+</div>
+<p>Here, we obtain the outer expectation over \(t,\epsilon\) through Monte Carlo sampling, and the inner expectations using a learned denoising model. Although the ELBO is only equal to \(\log p(x)\) with an optimal denoiser, our approximation approaches the true PMI as we improve the prediction.</p>
+<!-- End diffusion PMI excerpts. -->
+<h3>Trick 1: Timestep weighting</h3>
+<p>Diffusion models don't directly optimize the ELBO. Instead, they use timestep weighting. We implement this by taking the PMI between a clean and noisy sample:</p>
+<div class="equation">
+      \[
+      y_s=(1-s)y+s\epsilon,\qquad \epsilon\sim\mathcal{N}(0,I).
+      \]
+    </div>
+<div class="equation">
+      \[
+      \operatorname{PMI}(x,y_s)=\log\frac{p_s(y_s\mid x)}{p_s(y_s)}.
+      \]
+    </div>
+<p>We then factorize the expectation of the PMI across different noise levels, which we call \(\operatorname{PMI}^{*}\).</p>
+<div class="equation">
+      \[
+      \operatorname{PMI}^{*}(x,y)=
+      \mathbb{E}_{s\sim U[0,1],\,\epsilon}
+      \left[q(s)\operatorname{PMI}(x,y_s)\right].
+      \]
+    </div>
+<h3>Trick 2: Bootstrapping</h3>
+<!-- Excerpt from "Bootstrapped PMI Estimation". -->
+<p>Likelihood estimation gets harder as the amount of information in the input grows: predicting the probability of a single pixel is easy and calculable with dataset statistics, but predicting the likelihood of an image using a diffusion model may take intractably many Monte Carlo Estimation steps. To avoid this issue, we replace a challenging full-view PMI estimate with a sequence of local PMI increments. Instead of estimating the PMI between \(x\) and an entire large target \(y\), we write \(y\) as tokens \(y_1,\ldots,y_k\) and supervise only the <em>incremental</em> PMI contributed by the next token:</p><div class="equation">
+      \[
+      \begin{aligned}
+      &amp;\left\langle R_\theta(x),R_\theta(y_{\le k})-R_\theta(y_{\le k-1})\right\rangle\\
+      &amp;\quad=\operatorname{PMI}(x,y_{\le k})-\operatorname{PMI}(x,y_{\le k-1})\\
+      &amp;\quad=\log\frac{p(y_k\mid y_{&lt;k},x)}{p(y_k\mid y_{&lt;k})}
+      =\operatorname{PMI}(y_k,x\mid y_{&lt;k}).
+      \end{aligned}
+      \]
+    </div><p>Because these increments telescope, summing them recovers the full PMI:</p><div class="equation">
+      \[
+      \begin{aligned}
+      &amp;\sum_{k=1}^{K}\left[\operatorname{PMI}(x,y_{\le k})-\operatorname{PMI}(x,y_{\le k-1})\right]\\
+      &amp;\quad=\operatorname{PMI}(x,y_{\le K})-\operatorname{PMI}(x,\varnothing)\\
+      &amp;\quad=\operatorname{PMI}(x,y).
+      \end{aligned}
+      \]
+    </div><p>This makes the likelihood-ratio target easier to estimate than the PMI of the whole input at once.</p>
+
+<h3 id="full-representation-objective">Full Representation Objective</h3>
+<p>We combine Timestep Weighting and Bootstrapping to obtain our full representation objective. Given input views \(x\) and \(y\) and an incremental amount of information to add \(z\), we optimize for:</p>
+<!-- Equation eq:repr_loss from iclr2027_conference.tex, with vector macros expanded for browser rendering. -->
+<div class="equation wide" id="representation-objective-equation">
+\[
+\begin{aligned}
+\mathcal{L}_{\mathrm{RePR}}
+&amp;= \Bigl\|
+    \left\langle R_\theta({\mathbf{x}}),
+    R_\theta({\mathbf{y}},{\mathbf{z}})-R_\theta({\mathbf{y}})\right\rangle
+    - \operatorname{PMI}^*({\mathbf{x}}, {\mathbf{z}} \mid {\mathbf{y}})
+    \Bigr\|_2^2 \\
+&amp;= \Bigl\|
+    \left\langle R_\theta({\mathbf{x}}),
+    R_\theta({\mathbf{y}},{\mathbf{z}})-R_\theta({\mathbf{y}})\right\rangle \\
+&amp; \&gt;\&gt;\&gt;\&gt;- \mathbb{E}_{t\sim f(t),\,\boldsymbol{\epsilon}}
+    \Bigl[
+    g(t)\operatorname{stopgrad}\Bigl(
+    \left\|\mathbf{z}
+    - \mathbb{E}({\mathbf{z}}\mid\mathbf{z}_t,t,{\mathbf{y}})\right\|_2^2
+    - \left\|\mathbf{z}
+    - \mathbb{E}({\mathbf{z}}\mid\mathbf{z}_t,t,\mathbf{x},{\mathbf{y}})\right\|_2^2
+    \Bigr)
+    \Bigr]
+    \Bigr\|_2^2.
+\end{aligned}
+\]
+</div>
+<p>Because \(\operatorname{PMI}^{*}\) is asymmetric, and moreover because PMI can be non-positive-semidefinite, this factorization is bilinear instead of a standard dot product. We implement bilinearity implicitly by conditioning \(R_\theta\) on whether it is on the left or right of the vector product.</p>
+
+  </section>
+  <section id="architecture">
+    <h2>Architecture</h2>
+<p>We have two submodels with optional weight tying. 1) The Prediction Model (to obtain the PMI). 2) The Representation Model (into which we distill the PMI). The Prediction model uses an MAR architecture with a JiT \(x\)-prediction loss. For the representation model, we output <strong>full patch features</strong> as our representation, treating it as a single very large \(\mathbb{R}^{H\times W\times D}\) vector.</p><p>We use cross-attention to hide absolute position information in the representations, enforcing spatial equivariance. This equivariance is effectively a sparsity constraint. If our generative model were an MLP on the full, image-sized representation vector (intractable), this constraint would not matter. Instead, we use a transformer which shares a smaller MLP across all tokens, expecting each token to use the same format. Without this spatial equivariance constraint, the Representation Model could learn to apply an independent orthonormal rotation per token without changing its loss. A downstream transformer would then need to spend a constant number of FLOPs learning these different coordinate systems.</p><figure class="wide">
+<a aria-label="Open the original architecture figure PDF" href="assets/Figure_Main_v3.1_Joint.pdf"><img alt="RePR architecture: an MAR prediction branch supplies likelihood differences to supervise full patch features from a representation branch; relative position queries enforce spatial equivariance." loading="lazy" src="assets/architecture.svg"/></a>
+<figcaption>Architecture. <a href="assets/Figure_Main_v3.1_Joint.pdf">Original figure</a>.</figcaption>
+</figure>
+  </section>
+  <section id="results">
+    <h2>Results</h2>
+<h3>Feature Suppression</h3><p>Our approach generatively constructs the bits learned in the PMI factorization. Because of this, our approach is fundamentally robust to feature suppression.</p><p>We will show this with a toy experiment, introduced by Enigma Inc. We watermark every image patch using a seed determined by the batch index. This results in collapse for LeJEPA and DINO, but only moderately harms our RePR approach.</p><figure>
+<a aria-label="Open the original feature suppression figure PDF" href="assets/WatermarkFeatureSuppression2.pdf"><img alt="ImageNet class-probing performance on clean and watermarked data: LeJEPA and DINOv3 collapse with the watermark, while RePR retains useful features." loading="lazy" src="assets/feature-suppression.svg"/></a>
+<figcaption>RePR remains robust to feature suppression. <a href="assets/WatermarkFeatureSuppression2.pdf">Original figure</a>.</figcaption>
+</figure><h3>Tokenizer Encoder Scaling</h3><p>We demonstrate that scaling <em>only the tokenizer encoder</em> gives predictable gains at a fixed generative model budget.</p><p>We use Latent Forcing by default for generative modeling experiments, meaning we use no separate decoder, LPIPS, GAN, or external models. As a result, our tokenization is <em>lossless</em>, so our gains come from improved diffusability, rather than from compression or improved mode seeking behavior. SoTA ImageNet approaches may use heavy compression, but industry uses near-lossless tokenizers at scale.</p><figure class="wide">
+<a aria-label="Open the original encoder scaling figure PDF" href="assets/ScalingLawPlots2-1.pdf"><img alt="Tokenizer encoder training FLOPs versus downstream FID on ImageNet and GPIC. RePR improves with compute, and a second iteration of feature prediction improves the scaling curve." loading="lazy" src="assets/encoder-scaling.svg"/></a>
+<figcaption>RePR predictably scales as a tokenizer encoder. When holding size and training duration of a generative model constant, greater RePR size and FLOPs improve generation performance. <a href="assets/ScalingLawPlots2-1.pdf">Original figure</a>.</figcaption>
+</figure><h3>Compute-Optimality</h3><p>We demonstrate that dedicating FLOPs to training a tokenizer is compute-optimal versus diffusion.</p><figure class="compact">
+<a aria-label="Open the original compute optimality figure PDF" href="assets/ComputeOptimalV2.pdf"><img alt="Total encoder plus diffusion training FLOPs versus FID-10K, comparing JiT pixel diffusion with RePR and Latent Forcing for conditional and unconditional generation." loading="lazy" src="assets/compute-optimality.svg"/></a>
+<figcaption>Total (Encoder + Diffusion) training compute versus FID-10K for JiT and JiT with Latent Forcing using RePR, showing that representation learning is compute-optimal for generation. <a href="assets/ComputeOptimalV2.pdf">Original figure</a>.</figcaption>
+</figure><div aria-labelledby="compute-caption" class="table-scroll" role="region" tabindex="0">
+<table>
+<caption id="compute-caption">Under a total FLOPs budget, RePR training with Latent Forcing outperforms direct pixel diffusion using JiT with guidance, 50K generations.</caption>
+<thead><tr><th scope="col">Representation</th><th scope="col">Generative model</th><th scope="col">Total FLOPs ↓</th><th scope="col">FID-50K ↓</th><th scope="col">IS ↑</th></tr></thead>
+<tbody>
+<tr><th scope="row">Pixel</th><td>JiT-L, 600 epochs</td><td>3.57 × 10<sup>20</sup></td><td>2.36</td><td>298.5</td></tr>
+<tr><th scope="row">RePR-78M + Pixel</th><td>JiT-L, 440 epochs</td><td><strong>3.49 × 10<sup>20</sup></strong></td><td><strong>2.18</strong></td><td><strong>338.4</strong></td></tr>
+</tbody>
+</table>
+</div><h3>Additional Experiments</h3>
+<p>We find that recursively applying our training technique, by replacing the predicted incremental patches with features from a previous cycle of training, significantly improves performance. Importantly, this maintains the theoretical guarantees of our approach, as the features we predict are themselves a linear factorization of the PMI.</p>
+<div aria-labelledby="iteration-caption" class="table-scroll" role="region" tabindex="0">
+<table>
+<caption id="iteration-caption">Each iteration predicts the previous iteration’s features at 200ep, holding total epochs constant. RePR-173M.</caption>
+<thead><tr><th scope="col">Iteration</th><th scope="col">Prediction target</th><th scope="col">Epochs per iteration</th><th scope="col">FID-10K ↓</th></tr></thead>
+<tbody>
+<tr><th scope="row">1</th><td>Pixels</td><td>600</td><td>30.68</td></tr>
+<tr><th scope="row">2</th><td>Iteration 1 features</td><td>200 + 400</td><td>24.73</td></tr>
+<tr><th scope="row">3</th><td>Iteration 2 features</td><td>200 + 200 + 200</td><td><strong>23.81</strong></td></tr>
+</tbody>
+</table>
+</div>
+<p>We also ablate our approach as a tokenizer for RAE. We avoid RAE for most experiments, because RAE uses an expensive externally pretrained DINO-based GAN, which makes it unclear whether gains are due to the quality of learned representations or simply “borrowing FLOPs.”</p>
+<div aria-labelledby="rae-caption" class="table-scroll" role="region" tabindex="0">
+<table>
+<caption id="rae-caption">RAE comparisons at 20ep of DiT-XL training for ImageNet-only encoders.</caption>
+<thead><tr><th scope="col">Encoder</th><th scope="col">FID-50K ↓</th></tr></thead>
+<tbody>
+<tr><th scope="row">MoCo v3-B</th><td>13.84</td></tr>
+<tr><th scope="row">I-JEPA-H</th><td>12.46</td></tr>
+<tr><th scope="row">RePR-173M, iteration 3</th><td><strong>11.13</strong></td></tr>
+</tbody>
+</table>
+</div>
+  </section>
+  <section id="conclusion">
+    <h2>Conclusion</h2>
+<p>We introduce RePR, a uniquely principled and scalable representation learning algorithm for latent tokenization</p><p>Our approach:</p><ul><li>Shares the Theoretical Justification of Contrastive Learning, while using no negatives, no batch statistics, and being robust to feature suppression</li><li>Demonstrates Predictable Scaling Behavior</li><li>Is empirically strong, being compute-optimal versus raw diffusion</li></ul><p>Thank you for reading. I'm happy to answer questions on X</p>
+  </section>
+<section id="citation">
+<h2>Citation</h2>
+<pre><code>@misc{baade2026repr,
+  title = {Generative Representation Learning for
+           Scalable Latent Tokenization},
+  author = {Baade, Alan and Sargent, Kyle and Sitzmann, Vincent
+            and Chan, Eric Ryan and Johnson, Justin
+            and Fei-Fei, Li and Wetzstein, Gordon},
+  year = {2026},
+  url = {https://github.com/AlanBaade/repr}
+}</code></pre>
+</section>
+</article>
+</main>
+</body>
+</html>
