@@ -97,7 +97,7 @@
       -\operatorname{stopgrad}\!\Bigl(\log P_{G_\theta}(y\mid x)-\log P_{G_\theta}(y)\Bigr)\Bigr\|_2^2.
       \end{aligned}
       \]
-    </div><p>However, this doesn't work immediately for two reasons:</p><ol><li>PMI is dominated by high-frequency bits, not things we care about like semantics<ul><li>We solve this with timestep weighting</li></ul></li><li>Estimating \(\log p(x)\) is intractable as the size of \(x\) grows<ul><li>We solve this with a novel bootstrapping technique</li></ul></li></ol><h3>PMI from diffusion</h3><p>PMI can be extracted from generative models</p><p>For \(\log p\) from a discrete model, it's trivial.</p><p>For \(\log p\) from a diffusion model, it's extractable via a timestep-weighted loss.</p><ul><li>We can use the ELBO, not the probability-flow ODE log det Jacobian.</li></ul>
+    </div><p>However, this doesn't work immediately for two reasons:</p><ol><li>PMI is dominated by high-frequency bits, not things we care about like semantics<ul><li>We address this with timestep weighting</li></ul></li><li>Estimating \(\log p(x)\) is intractable as the size of \(x\) grows<ul><li>We address this with a novel bootstrapping technique</li></ul></li></ol><h3>PMI from diffusion</h3><p>PMI can be extracted from generative models</p><p>For \(\log p\) from a discrete model, it's trivial.</p><p>For \(\log p\) from a diffusion model, it's extractable via a timestep-weighted loss.</p><ul><li>We can use the ELBO, not the probability-flow ODE log det Jacobian.</li></ul>
 <!-- Excerpts from "PMI Estimation from Generative Models", including eq. pmidiffusion.
      Notation follows this article (y_t, x/y, epsilon); VLB is written ELBO. -->
 <p>In this work we use the linear-interpolation (flow-based) schedule \(y_t=(1-t)y+t\epsilon\), with \(\epsilon\sim\mathcal{N}(0,I)\).</p>
@@ -186,7 +186,7 @@
 \end{aligned}
 \]
 </div>
-<p>Because \(\operatorname{PMI}^{*}\) is asymmetric, and moreover because PMI can be non-positive-semidefinite, this factorization is bilinear instead of a standard dot product. We implement bilinearity implicitly by conditioning \(R_\theta\) on whether it is on the left or right of the vector product.</p>
+<p>Because \(\operatorname{PMI}^{*}\) is asymmetric, and moreover because PMI can be non-positive-semidefinite, this factorization is bilinear instead of a standard dot product. We implement bilinearity implicitly by identifying to \(R_\theta\) the input tokens that represent \(z\).</p>
 
   </section>
   <section id="architecture">
