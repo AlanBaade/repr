@@ -4,7 +4,7 @@
 [![arXiv](https://img.shields.io/badge/arXiv%20paper-2610.20533-b31b1b.svg)](https://arxiv.org/abs/2610.20533)&nbsp;
 [![Blog](https://img.shields.io/badge/Blog-Read-3366cc.svg)](https://alanbaade.github.io/repr/)&nbsp;
 
-## Code Release By 10/2r/2026
+## Code Release By 10/24/2026
 
 Until then, here's a demo colab notebook:
 
